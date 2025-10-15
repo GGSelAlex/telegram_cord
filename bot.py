@@ -1,13 +1,21 @@
 import telebot
 import os
 import requests
+import hmac
+import hashlib
 from flask import Flask, request
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 
 # ==== НАЛАШТУВАННЯ ====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 NOWPAYMENTS_API_KEY = os.getenv("NOWPAYMENTS_API_KEY")
-ADMIN_IDS = [int(i) for i in os.getenv("ADMIN_IDS").split(",")]
+IPN_SECRET = os.getenv("IPN_SECRET")
+
+ADMIN_IDS = []
+if os.getenv("ADMIN1_ID"):
+    ADMIN_IDS.append(int(os.getenv("ADMIN1_ID")))
+if os.getenv("ADMIN2_ID"):
+    ADMIN_IDS.append(int(os.getenv("ADMIN2_ID")))
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
@@ -47,6 +55,7 @@ def start(msg):
 def abroad(msg):
     text = (
         "🌍 *Виїзд за кордон*\n\n"
+        "Білий квиток: Ваш Шлях до Свободи та Спокою\n"
         "Ми допоможемо легально виїхати за межі України.\n\n"
         "📄 Ви отримуєте:\n"
         "• Тимчасове посвідчення\n"
@@ -73,10 +82,7 @@ def deferment(msg):
 def disability(msg):
     text = (
         "♿ *Оформлення інвалідності*\n\n"
-        "Переваги:\n"
-        "• Відстрочка від служби\n"
-        "• Соціальні гарантії\n"
-        "• Пенсійні виплати\n\n"
+        "Комплексна послуга з оформлення групи інвалідності (ІІ або ІІІ).\n\n"
         "📄 Ви отримуєте:\n"
         "• ЛЛК\n"
         "• Довідку ЕКОПФ (МСЕК)\n"
@@ -89,7 +95,7 @@ def disability(msg):
 def release(msg):
     text = (
         "🪖 *Звільнення зі служби в ЗСУ*\n\n"
-        "Допомагаємо оформити звільнення на законних підставах.\n\n"
+        "Індивідуальний підхід до вашої ситуації.\n\n"
         "📄 Ви отримуєте:\n"
         "• Витяг з наказу\n"
         "• Тимчасове посвідчення\n"
@@ -113,7 +119,7 @@ def pay(msg):
     payload = {
         "price_amount": amount_usd,
         "price_currency": "usd",
-        "pay_currency": "usdttrc20",  # <<<<<<<<<< USDT TRC20 !!!
+        "pay_currency": "usdttrc20",  # USDT TRC20
         "ipn_callback_url": "https://твій-домен.onrender.com/ipn",
         "order_id": str(msg.chat.id),
         "order_description": "Оплата юридичної консультації"
@@ -131,10 +137,21 @@ def pay(msg):
     else:
         bot.send_message(msg.chat.id, f"⚠️ Помилка створення платежу: {data}")
 
-# ==== CALLBACK ВІД NOWPAYMENTS ====
+# ==== IPN (NowPayments) ====
 @app.route("/ipn", methods=["POST"])
 def ipn():
     data = request.json
+    received_hmac = request.headers.get("x-nowpayments-sig")
+    payload = request.get_data()
+    calc_hmac = hmac.new(
+        bytes(IPN_SECRET, 'utf-8'),
+        msg=payload,
+        digestmod=hashlib.sha512
+    ).hexdigest()
+
+    if received_hmac != calc_hmac:
+        return "Invalid signature", 403
+
     if data.get("payment_status") == "finished":
         user_id = int(data.get("order_id"))
         bot.send_message(user_id, "✅ Оплату отримано! Юрист зв’яжеться з вами найближчим часом.")
@@ -142,11 +159,11 @@ def ipn():
             bot.send_message(admin, f"💸 Отримано оплату від користувача {user_id}")
     return "OK", 200
 
-# ==== КНОПКА НАЗАД ====
+# ==== НАЗАД У МЕНЮ ====
 @bot.message_handler(func=lambda msg: msg.text == "⬅️ Назад у меню")
 def back(msg):
     bot.send_message(msg.chat.id, "🔙 Ви повернулись у головне меню:", reply_markup=main_menu())
 
 # ==== ЗАПУСК ====
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
