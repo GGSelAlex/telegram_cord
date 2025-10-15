@@ -1,7 +1,8 @@
 import telebot
 
 # === 1. Твій токен від BotFather ===
-TOKEN = "8379715669:AAEXC7_BhlnGZUJw-FMj_hVigoByMPjb9C4"
+import os
+TOKEN = os.getenv("BOT_TOKEN")
 bot = telebot.TeleBot(TOKEN)
 
 # === 2. Головне меню ===
@@ -99,3 +100,4 @@ def direct_consult(message):
 # === 8. Запуск ===
 print("Бот запущений. Очікуємо повідомлень...")
 bot.polling(none_stop=True)
+
