@@ -4,6 +4,8 @@ from flask import Flask, request
 
 # === 1. Отримуємо токен з Render Environment ===
 TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = 8208162262  # <- заміни на свій Telegram ID
+
 bot = telebot.TeleBot(TOKEN)
 
 # === 2. Flask-сервер для Webhook ===
@@ -20,7 +22,7 @@ def webhook():
     bot.set_webhook(url=f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/{TOKEN}")
     return "Bot is running via webhook", 200
 
-# === 3. Обробники команд і кнопок ===
+# === 3. Кнопки для користувача ===
 @bot.message_handler(commands=['start'])
 def start(message):
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
@@ -48,7 +50,6 @@ def services(message):
 
 @bot.message_handler(func=lambda m: m.text == "🕒 Запис на консультацію")
 def consult(message):
-    # Кнопка для відправки телефону
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     button = telebot.types.KeyboardButton("Надіслати номер телефону", request_contact=True)
     markup.add(button)
@@ -58,14 +59,28 @@ def consult(message):
         reply_markup=markup
     )
 
+# === 4. Обробка отриманого контакту ===
 @bot.message_handler(content_types=['contact'])
 def handle_contact(message):
     contact = message.contact.phone_number
+    user_name = message.from_user.full_name
+    user_id = message.from_user.id
+
+    # Відповідь користувачу
     bot.send_message(
         message.chat.id,
         f"Дякуємо! Ваш номер {contact} отримано.\n"
         "Натисніть, щоб одразу написати юристу 👇",
         reply_markup=contact_markup()
+    )
+
+    # Сповіщення адміну
+    bot.send_message(
+        ADMIN_ID,
+        f"📞 Новий користувач:\n"
+        f"Ім'я: {user_name}\n"
+        f"Telegram ID: {user_id}\n"
+        f"Телефон: {contact}"
     )
 
 def contact_markup():
@@ -90,6 +105,6 @@ def contact(message):
         parse_mode="Markdown"
     )
 
-# === 4. Запуск Flask-сервера ===
+# === 5. Запуск Flask-сервера ===
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
