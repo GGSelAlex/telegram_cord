@@ -2,9 +2,9 @@ import telebot
 import os
 from flask import Flask, request
 
-# === 1. Токен та адмін ===
+# === 1. Токен та список адмінів ===
 TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = 8208162262  # <- твій Telegram ID
+ADMIN_IDS = [8411342070, 8208162262]  # <- встав свої Telegram ID
 
 bot = telebot.TeleBot(TOKEN)
 
@@ -22,17 +22,19 @@ def webhook():
     bot.set_webhook(url=f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/{TOKEN}")
     return "Bot is running via webhook", 200
 
-# === 3. Кнопки /start ===
+# === 3. Функція сповіщення адміністраторів ===
+def notify_admins(message_text):
+    for admin_id in ADMIN_IDS:
+        bot.send_message(admin_id, message_text)
+
+# === 4. /start ===
 @bot.message_handler(commands=['start'])
 def start(message):
     user_name = message.from_user.full_name
     user_id = message.from_user.id
 
-    # Сповіщення адміну про нового користувача
-    bot.send_message(
-        ADMIN_ID,
-        f"🚀 Новий користувач натиснув /start:\nІм'я: {user_name}\nTelegram ID: {user_id}"
-    )
+    # Сповіщення всім адміністраторам
+    notify_admins(f"🚀 Новий користувач натиснув /start:\nІм'я: {user_name}\nTelegram ID: {user_id}")
 
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row("⚖️ Послуги", "🕒 Запис на консультацію")
@@ -45,7 +47,7 @@ def start(message):
     )
     bot.send_message(message.chat.id, welcome_text, parse_mode="Markdown", reply_markup=markup)
 
-# === 4. Послуги ===
+# === 5. Послуги ===
 @bot.message_handler(func=lambda m: m.text == "⚖️ Послуги")
 def services(message):
     bot.send_message(
@@ -58,7 +60,7 @@ def services(message):
         "Для запису скористайтесь кнопкою '🕒 Запис на консультацію'."
     )
 
-# === 5. Запис на консультацію ===
+# === 6. Запис на консультацію ===
 @bot.message_handler(func=lambda m: m.text == "🕒 Запис на консультацію")
 def consult(message):
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
@@ -71,7 +73,7 @@ def consult(message):
         reply_markup=markup
     )
 
-# === 6. Обробка контакту ===
+# === 7. Обробка контакту ===
 @bot.message_handler(content_types=['contact'])
 def handle_contact(message):
     contact = message.contact.phone_number
@@ -85,12 +87,9 @@ def handle_contact(message):
         reply_markup=contact_markup()
     )
 
-    bot.send_message(
-        ADMIN_ID,
-        f"📞 Новий контакт користувача:\nІм'я: {user_name}\nTelegram ID: {user_id}\nТелефон: {contact}"
-    )
+    notify_admins(f"📞 Новий контакт користувача:\nІм'я: {user_name}\nTelegram ID: {user_id}\nТелефон: {contact}")
 
-# === 7. Кнопка "Написати юристу" ===
+# === 8. Кнопка "Написати юристу" ===
 @bot.message_handler(func=lambda m: m.text == "Написати юристу" or m.text == "💬 Консультація")
 def write_lawyer(message):
     bot.send_message(
@@ -100,7 +99,7 @@ def write_lawyer(message):
         reply_markup=None
     )
 
-# === 8. Про компанію ===
+# === 9. Про компанію ===
 @bot.message_handler(func=lambda m: m.text == "ℹ️ Про компанію")
 def about(message):
     bot.send_message(
@@ -110,12 +109,12 @@ def about(message):
         "допомогу у питаннях військової служби, соціального захисту та законності."
     )
 
-# === 9. Inline кнопка для контакту з юристом ===
+# === 10. Inline кнопка для контакту з юристом ===
 def contact_markup():
     markup = telebot.types.InlineKeyboardMarkup()
     markup.add(telebot.types.InlineKeyboardButton("Написати юристу", url="https://t.me/uristcord"))
     return markup
 
-# === 10. Запуск Flask ===
+# === 11. Запуск Flask ===
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
