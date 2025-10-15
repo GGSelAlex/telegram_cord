@@ -4,7 +4,7 @@ from flask import Flask, request
 
 # === 1. Отримуємо токен і адміністраторів ===
 TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_IDS = [int(os.getenv("8208162262")), int(os.getenv("8411342070"))]  # ID двох адміністраторів
+ADMIN_IDS = [int(os.getenv("ADMIN1_ID")), int(os.getenv("ADMIN2_ID"))]  # ID двох адміністраторів
 bot = telebot.TeleBot(TOKEN)
 
 # === 2. Flask-сервер для Webhook ===
@@ -160,3 +160,4 @@ def contact(message):
 
 
 # === 6. Повернення назад ===
+
