@@ -3,6 +3,7 @@ import requests
 import telebot
 from flask import Flask, request
 import shelve
+import sys # Додано для перевірки критичних змінних
 from requests.exceptions import RequestException, HTTPError
 
 # =========================
@@ -12,6 +13,7 @@ TOKEN = os.getenv("BOT_TOKEN")
 # Переконайтеся, що змінні оточення BOT_TOKEN, ADMIN1_ID, ETH_BSC_API_KEY встановлені
 bot = telebot.TeleBot(TOKEN) 
 ADMIN_IDS = [int(os.getenv("ADMIN1_ID", 0)), int(os.getenv("ADMIN2_ID", 0))]
+TELEGRAM_LAWYER_USERNAME = os.getenv("LAWYER_USERNAME", "your_lawyer_username") # <-- ЗМІНІТЬ НА РЕАЛЬНИЙ USERNAME ЮРИСТА
 
 # Гаманці
 WALLETS = {
@@ -20,6 +22,11 @@ WALLETS = {
     "ETH": "0xc8872cac097911Bfa3203d5c9225c4CdE2A882B5"
 }
 ETH_BSC_API_KEY = os.getenv("ETH_BSC_API_KEY")
+
+# Назви DB для shelve (для стійкого зберігання)
+HASH_DB_NAME = 'processed_hashes'
+USER_STATE_DB_NAME = 'user_states' # Нова константа для зберігання стану користувача
+# user_network_choice більше не є глобальним словником, а зберігається в DB
 
 # Послуги
 SERVICES = {
@@ -45,7 +52,10 @@ MESSAGES = {
     ),
     "MAIN_MENU_RETURN": "✅ Ви повернулися до *Головного Меню*. Оберіть розділ 👇",
     "SERVICES_MENU": "Оберіть, будь ласка, вид послуги:",
-    "CONSULTATION": "💬 Для *первинної* консультації, будь ласка, надішліть деталі свого запиту. Менеджер відповість Вам найближчим часом.",
+    "CONSULTATION_MENU": (
+        "💬 *Первинна Консультація*\n\n"
+        "Оберіть, як Вам зручніше надіслати запит:"
+    ),
     "PREMIUM": (
         "🚀 *PREMIUM ЮРИДИЧНИЙ СУПРОВІД*\n\n"
         "Цей пакет включає 100% гарантію результату та повний захист.\n"
@@ -55,31 +65,38 @@ MESSAGES = {
         "• Всі державні мита та збори включені.\n\n"
         "Надішліть запит, щоб отримати індивідуальну пропозицію."
     ),
-    "HOTLINE": (
-        "📞 *ГАРАНТОВАНА ГАРЯЧА ЛІНІЯ 24/7*\n\n"
-        "Отримайте прямий зв'язок з юристом для екстрених ситуацій. Доступно лише для клієнтів, які розпочали співпрацю.\n\n"
-        "Для підключення до Гарячої Лінії, оберіть *'Premium Супровід'* або розпочніть роботу з одним із пакетів послуг."
-    ),
     "NETWORK_CHOICE": "Оберіть мережу для оплати 1 USDT:",
+    
+    # НОВІ ШАБЛОНИ ДЛЯ АДМІН-СПОВІЩЕНЬ
+    "ADMIN_NEW_USER": "Новий користувач: {user_link} (ID: `{chat_id}`)",
+    "ADMIN_PAID_SUCCESS": "Користувач {user_link} сплатив 1 USDT {network}. TX: `{tx_hash}`",
+    "ADMIN_PAID_INVALID": "⚠️ НЕПРАВИЛЬНА СУМА/АДРЕСА ({network}) від {user_link}. TX: `{tx_hash}`",
+    "ADMIN_PAID_UNCONFIRMED": "⚠️ НЕПІДТВЕРДЖЕНА {network} від {user_link}. TX: `{tx_hash}`",
+    "ADMIN_NEW_CONSULT_TEXT": "🔥 НОВИЙ ЗАПИТ НА КОНСУЛЬТАЦІЮ від {user_link} (ID: `{chat_id}`):\n\n{query}",
+    "ADMIN_NEW_CONSULT_VOICE": "🔥 НОВИЙ ГОЛОСОВИЙ ЗАПИТ НА КОНСУЛЬТАЦІЮ від {user_link} (ID: `{chat_id}`)",
 }
 
-# Flask та Стан користувача (у RAM для простоти, але краще Redis/shelve)
+# Flask
 app = Flask(__name__)
-user_network_choice = {}  # chat_id -> мережа
-HASH_DB_NAME = 'processed_hashes'
 
 
 # =========================
 # Допоміжні функції
 # =========================
 def notify_admin(text):
-    """Надсилає повідомлення всім адміністраторам."""
+    """Надсилає повідомлення всім адміністраторам (в Markdown)."""
     for admin_id in ADMIN_IDS:
         if admin_id != 0:
             try:
-                bot.send_message(admin_id, text)
+                bot.send_message(admin_id, text, parse_mode="Markdown")
             except telebot.apihelper.ApiException:
                 print(f"Помилка відправки повідомлення адміністратору {admin_id}")
+
+def get_user_link(message):
+    """Створює Markdown-посилання для адміністратора."""
+    chat_id = message.chat.id
+    first_name = message.from_user.first_name or f"Користувач {chat_id}"
+    return f"[{first_name}](tg://user?id={chat_id})"
 
 def show_main_menu_inline(chat_id, text=MESSAGES["MAIN_MENU_RETURN"], message_id=None):
     """Генерує та відправляє/редагує головне меню з inline-кнопками."""
@@ -88,20 +105,22 @@ def show_main_menu_inline(chat_id, text=MESSAGES["MAIN_MENU_RETURN"], message_id
     btn_services = telebot.types.InlineKeyboardButton("⚖️ Послуги", callback_data="show_services_menu")
     btn_consultation = telebot.types.InlineKeyboardButton("💬 Консультація", callback_data="show_consultation")
     btn_premium = telebot.types.InlineKeyboardButton("🌟 Premium Супровід", callback_data="show_premium")
-    btn_hotline = telebot.types.InlineKeyboardButton("📞 Гаряча Лінія 24/7", callback_data="show_hotline")
-    
-    markup.add(btn_services, btn_consultation, btn_premium, btn_hotline)
+
+    markup.add(btn_services, btn_consultation, btn_premium)
     
     if message_id:
         bot.edit_message_text(text, chat_id, message_id, parse_mode="Markdown", reply_markup=markup)
     else:
+        # Відправка основного меню
         bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
-        # На всякий випадок видаляємо стару Reply-клавіатуру
+        
+        # ВИКОРИСТАННЯ НЕВИДИМОГО СИМВОЛА '\u200b' ЗАМІСТЬ КРАПКИ
         try:
-            bot.send_message(chat_id, ".", reply_markup=telebot.types.ReplyKeyboardRemove())
+            bot.send_message(chat_id, "\u200b", reply_markup=telebot.types.ReplyKeyboardRemove())
         except Exception:
             pass
 
+# ... інші допоміжні функції (без змін)
 def send_services_category_menu(chat_id, message_id):
     """Редагує повідомлення на меню категорій послуг з INLINE-кнопками."""
     markup = telebot.types.InlineKeyboardMarkup(row_width=2) 
@@ -158,12 +177,14 @@ def send_network_choice_menu(chat_id, message_id):
 @bot.message_handler(commands=['start'])
 def start(message):
     chat_id = message.chat.id
-    # Очищаємо стан користувача при старті
-    if chat_id in user_network_choice:
-        del user_network_choice[chat_id]
+    user_link = get_user_link(message)
+    
+    with shelve.open(USER_STATE_DB_NAME) as db:
+        if str(chat_id) in db:
+            del db[str(chat_id)]
         
     show_main_menu_inline(chat_id, text=MESSAGES["START_WELCOME"])
-    notify_admin(f"Новий користувач: {chat_id} ({message.from_user.first_name})")
+    notify_admin(MESSAGES["ADMIN_NEW_USER"].format(user_link=user_link, chat_id=chat_id))
 
 
 # =========================
@@ -175,15 +196,16 @@ def handle_back_to_main(call):
     chat_id = call.message.chat.id
     
     bot.answer_callback_query(call.id)
-    if chat_id in user_network_choice:
-        del user_network_choice[chat_id]
+    with shelve.open(USER_STATE_DB_NAME) as db:
+        if str(chat_id) in db:
+            del db[str(chat_id)]
         
     show_main_menu_inline(chat_id, message_id=call.message.message_id)
 
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("show_") or call.data == "start_usdt_payment")
+@bot.callback_query_handler(func=lambda call: call.data.startswith("show_") or call.data == "start_usdt_payment" or call.data == "consultation_direct_to_bot")
 def handle_main_options(call):
-    """Обробка основних опцій: Послуги, Консультація, Premium, Гаряча Лінія, Оплата."""
+    """Обробка основних опцій: Послуги, Консультація, Premium, Оплата."""
     chat_id = call.message.chat.id
     message_id = call.message.message_id
     data = call.data
@@ -194,13 +216,62 @@ def handle_main_options(call):
         send_services_category_menu(chat_id, message_id)
         
     elif data == "show_consultation":
-        bot.edit_message_text(MESSAGES["CONSULTATION"], chat_id, message_id, parse_mode="Markdown", reply_markup=None)
+        # Меню консультації
+        markup = telebot.types.InlineKeyboardMarkup(row_width=1)
+        
+        btn_direct = telebot.types.InlineKeyboardButton(
+            "Написати Юристу Напряму 📝", 
+            url=f"https://t.me/{TELEGRAM_LAWYER_USERNAME}"
+        )
+        btn_bot = telebot.types.InlineKeyboardButton(
+            "Надіслати Запит Боту (Текст/Голос) 📥", 
+            callback_data="consultation_direct_to_bot"
+        )
+        markup.add(btn_direct, btn_bot)
+        
+        bot.edit_message_text(
+            MESSAGES["CONSULTATION_MENU"], 
+            chat_id, 
+            message_id, 
+            parse_mode="Markdown", 
+            reply_markup=markup
+        )
+        
+    elif data == "consultation_direct_to_bot":
+        # Встановлюємо стан, що користувач очікує консультації
+        with shelve.open(USER_STATE_DB_NAME) as db:
+            db[str(chat_id)] = "AWAITING_CONSULTATION" 
+        
+        bot.edit_message_text(
+            "*✅ Готово!*\n\nБудь ласка, детально опишіть Ваше питання тут. Як тільки Ви надішлете повідомлення, менеджер отримає сповіщення.\n\n_Зверніть увагу: ми очікуємо саме Ваш запит, а не 'Привіт'._",
+            chat_id, 
+            message_id, 
+            parse_mode="Markdown", 
+            reply_markup=None
+        )
         
     elif data == "show_premium":
-        bot.edit_message_text(MESSAGES["PREMIUM"], chat_id, message_id, parse_mode="Markdown", reply_markup=None)
+        # БЛОК ДЛЯ PREMIUM
+        markup = telebot.types.InlineKeyboardMarkup(row_width=1)
 
-    elif data == "show_hotline":
-        bot.edit_message_text(MESSAGES["HOTLINE"], chat_id, message_id, parse_mode="Markdown", reply_markup=None)
+        btn_direct = telebot.types.InlineKeyboardButton(
+            "Написати Юристу Напряму 📝", 
+            url=f"https://t.me/{TELEGRAM_LAWYER_USERNAME}"
+        )
+        btn_back = telebot.types.InlineKeyboardButton(
+            "🔙 Назад до головного", 
+            callback_data="back_to_main_menu"
+        )
+
+        markup.add(btn_direct, btn_back)
+        
+        bot.edit_message_text(
+            MESSAGES["PREMIUM"], 
+            chat_id, 
+            message_id, 
+            parse_mode="Markdown", 
+            reply_markup=markup 
+        )
         
     elif data == "start_usdt_payment":
         send_network_choice_menu(chat_id, message_id)
@@ -221,12 +292,15 @@ def handle_network_selection(call):
     network = call.data.split("_")[1]
     
     bot.answer_callback_query(call.id)
-    user_network_choice[chat_id] = network
+    
+    # Зберігання вибраної мережі в стійкому сховищі
+    with shelve.open(USER_STATE_DB_NAME) as db:
+        db[str(chat_id)] = network
+        
     wallet = WALLETS[network]
     
     text = f"💳 Оплата 1 USDT через {network}\nАдреса: `{wallet}`\n\nНадішліть боту TX Hash для перевірки."
     
-    # Видаляємо inline-кнопки вибору мережі перед відправкою хешу
     bot.edit_message_text(call.message.text, chat_id, call.message.message_id, reply_markup=None)
     
     bot.send_message(chat_id, text, parse_mode="Markdown")
@@ -239,24 +313,31 @@ def handle_network_selection(call):
 def check_tx_hash(message):
     tx_hash = message.text.strip()
     chat_id = message.chat.id
-    network = user_network_choice.get(chat_id)
+    user_link = get_user_link(message)
+    
+    # Отримання стану з DB
+    with shelve.open(USER_STATE_DB_NAME) as db:
+        network = db.get(str(chat_id))
 
-    if not network:
+    if not network or network not in WALLETS:
         bot.send_message(chat_id, "❌ Спочатку оберіть мережу для оплати.")
         return
-        
-    # 1. Перевірка на повторний хеш у сховищі
+    
+    # Перевірка на вже оброблену транзакцію
     with shelve.open(HASH_DB_NAME) as db:
         if tx_hash in db:
             bot.send_message(chat_id, "⚠️ Ця транзакція вже була успішно оброблена раніше.")
             return
 
+    # Загальне позитивне повідомлення для клієнта
+    positive_client_msg = "✅ Чудово! Ми отримали Ваш хеш-код. Очікуйте на підтвердження транзакції. Менеджер зв'яжеться з Вами протягом кількох хвилин."
+    
     try:
         # Логіка перевірки TRC20 (Tronscan)
         if network == "TRC20":
             url = f"https://apilist.tronscan.org/api/transaction-info?hash={tx_hash}"
             response = requests.get(url, timeout=10)
-            response.raise_for_status() # Підніме HTTPError
+            response.raise_for_status() 
             resp = response.json()
             
             confirmed = resp.get("ret", [{}])[0].get("contractRet") == "SUCCESS"
@@ -268,14 +349,18 @@ def check_tx_hash(message):
                 if to_address == WALLETS["TRC20"] and amount == 1:
                     with shelve.open(HASH_DB_NAME) as db:
                         db[tx_hash] = chat_id
+                    with shelve.open(USER_STATE_DB_NAME) as db:
+                        if str(chat_id) in db:
+                            del db[str(chat_id)]
                         
                     bot.send_message(chat_id, "✅ Оплата 1 USDT TRC20 підтверджена! Менеджер скоро зв'яжеться з Вами.")
-                    notify_admin(f"Користувач {chat_id} сплатив 1 USDT TRC20. TX: {tx_hash}")
-                    del user_network_choice[chat_id] 
+                    notify_admin(MESSAGES["ADMIN_PAID_SUCCESS"].format(user_link=user_link, network="TRC20", tx_hash=tx_hash))
                 else:
-                    bot.send_message(chat_id, "❌ Транзакція успішна, але дані (адреса/сума) не збігаються.")
+                    bot.send_message(chat_id, positive_client_msg)
+                    notify_admin(MESSAGES["ADMIN_PAID_INVALID"].format(user_link=user_link, network="TRC20", tx_hash=tx_hash))
             else:
-                bot.send_message(chat_id, "❌ Транзакція ще не підтверджена або не вдалася.")
+                bot.send_message(chat_id, positive_client_msg)
+                notify_admin(MESSAGES["ADMIN_PAID_UNCONFIRMED"].format(user_link=user_link, network="TRC20", tx_hash=tx_hash))
         
         # Логіка перевірки BSC/ETH (BscScan/Etherscan)
         else:
@@ -292,28 +377,68 @@ def check_tx_hash(message):
             if status == "1":
                 with shelve.open(HASH_DB_NAME) as db:
                     db[tx_hash] = chat_id
-                    
+                with shelve.open(USER_STATE_DB_NAME) as db:
+                    if str(chat_id) in db:
+                        del db[str(chat_id)]
+                        
                 bot.send_message(chat_id, f"✅ Транзакція {tx_hash} підтверджена {network}! Менеджер скоро зв'яжеться з Вами.")
-                notify_admin(f"Користувач {chat_id} сплатив 1 USDT {network}. TX: {tx_hash}")
-                del user_network_choice[chat_id] 
+                notify_admin(MESSAGES["ADMIN_PAID_SUCCESS"].format(user_link=user_link, network=network, tx_hash=tx_hash))
             else:
-                bot.send_message(chat_id, f"❌ Транзакція ще не підтверджена або некоректна {network}. Спробуйте пізніше.")
+                bot.send_message(chat_id, positive_client_msg)
+                notify_admin(MESSAGES["ADMIN_PAID_UNCONFIRMED"].format(user_link=user_link, network=network, tx_hash=tx_hash))
                 
-    # 2. Специфічна обробка помилок
     except HTTPError as e:
         error_message = f"❌ Помилка HTTP під час перевірки {network} (Status {e.response.status_code}): {e}"
         bot.send_message(chat_id, "❌ Помилка зв'язку з API-сервісом. Спробуйте пізніше або перевірте TX Hash.")
-        notify_admin(error_message)
+        notify_admin(f"❌ Критична помилка API {network} від {user_link}. HTTP Error: {e.response.status_code}")
     except RequestException as e:
         error_message = f"❌ Мережева помилка при перевірці {network}: {e}"
         bot.send_message(chat_id, "❌ Виникла мережева помилка. Спробуйте пізніше.")
-        notify_admin(error_message)
+        notify_admin(f"❌ Критична помилка мережі {network} від {user_link}. Error: {e}")
     except Exception as e:
         error_message = f"❌ Невідома помилка при обробці TX Hash для {network}: {e}"
         bot.send_message(chat_id, "❌ Виникла невідома помилка обробки. Зверніться до підтримки.")
-        notify_admin(error_message)
+        notify_admin(f"❌ Невідома помилка {network} від {user_link}. Error: {e}")
 
         
+# =========================
+# Обробник консультаційних запитів
+# =========================
+@bot.message_handler(func=lambda m: True, content_types=['text', 'voice', 'photo', 'document'])
+def handle_consultation_request(message):
+    chat_id = message.chat.id
+    user_link = get_user_link(message)
+    
+    with shelve.open(USER_STATE_DB_NAME) as db:
+        current_state = db.get(str(chat_id))
+
+    if current_state != "AWAITING_CONSULTATION":
+        # Якщо стан не очікує консультації, передаємо в обробник невідомих
+        handle_unknown_messages(message)
+        return
+
+    if message.content_type == 'text':
+        query = message.text
+        notify_admin(MESSAGES["ADMIN_NEW_CONSULT_TEXT"].format(user_link=user_link, chat_id=chat_id, query=query))
+        
+    elif message.content_type == 'voice':
+        notify_admin(MESSAGES["ADMIN_NEW_CONSULT_VOICE"].format(user_link=user_link, chat_id=chat_id))
+        if ADMIN_IDS and ADMIN_IDS[0] != 0:
+            bot.forward_message(ADMIN_IDS[0], chat_id, message.message_id)
+    
+    else: # Обробка фото/документів
+        notify_admin(f"🔥 НОВИЙ ЗАПИТ НА КОНСУЛЬТАЦІЮ (ДОКУМЕНТ/ФОТО) від {user_link} (ID: `{chat_id}`)")
+        if ADMIN_IDS and ADMIN_IDS[0] != 0:
+            bot.forward_message(ADMIN_IDS[0], chat_id, message.message_id) 
+
+    bot.send_message(chat_id, "Дякуємо! Ваш запит отримано та передано менеджеру. Очікуйте відповіді найближчим часом.")
+    
+    # Очищення стану після отримання запиту
+    with shelve.open(USER_STATE_DB_NAME) as db:
+        if str(chat_id) in db:
+            del db[str(chat_id)]
+
+
 # =========================
 # Обробник невідомих повідомлень (UX)
 # =========================
@@ -321,8 +446,14 @@ def check_tx_hash(message):
 def handle_unknown_messages(message):
     chat_id = message.chat.id
     
-    if chat_id in user_network_choice:
+    with shelve.open(USER_STATE_DB_NAME) as db:
+        current_state = db.get(str(chat_id))
+    
+    if current_state in ["TRC20", "BSC", "ETH"]:
         bot.send_message(chat_id, "⚠️ Очікую TX Hash для підтвердження оплати. Якщо ви передумали, скористайтеся командою /start.")
+    elif current_state == "AWAITING_CONSULTATION":
+        # Це вже обробляється в handle_consultation_request, але тут на всяк випадок
+        pass 
     else:
         show_main_menu_inline(chat_id, text="Я вас не зрозумів. Будь ласка, оберіть дію з меню:")
 
@@ -342,7 +473,13 @@ def webhook():
     return "Bot is running via webhook", 200
 
 # =========================
-# Запуск сервера
+# Запуск сервера (з перевіркою)
 # =========================
 if __name__ == "__main__":
+    if not TOKEN:
+        print("Критична помилка: змінна оточення BOT_TOKEN не встановлена.")
+        sys.exit(1)
+    if ADMIN_IDS[0] == 0:
+        print("Попередження: Змінна оточення ADMIN1_ID не встановлена або дорівнює 0. Сповіщення адміністратора не працюватимуть.")
+
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
