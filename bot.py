@@ -3,7 +3,7 @@ import requests
 import telebot
 from flask import Flask, request
 import shelve
-import sys # Додано для перевірки критичних змінних
+import sys 
 from requests.exceptions import RequestException, HTTPError
 
 # =========================
@@ -25,8 +25,7 @@ ETH_BSC_API_KEY = os.getenv("ETH_BSC_API_KEY")
 
 # Назви DB для shelve (для стійкого зберігання)
 HASH_DB_NAME = 'processed_hashes'
-USER_STATE_DB_NAME = 'user_states' # Нова константа для зберігання стану користувача
-# user_network_choice більше не є глобальним словником, а зберігається в DB
+USER_STATE_DB_NAME = 'user_states' 
 
 # Послуги
 SERVICES = {
@@ -120,7 +119,7 @@ def show_main_menu_inline(chat_id, text=MESSAGES["MAIN_MENU_RETURN"], message_id
         except Exception:
             pass
 
-# ... інші допоміжні функції (без змін)
+
 def send_services_category_menu(chat_id, message_id):
     """Редагує повідомлення на меню категорій послуг з INLINE-кнопками."""
     markup = telebot.types.InlineKeyboardMarkup(row_width=2) 
@@ -355,10 +354,15 @@ def check_tx_hash(message):
                         
                     bot.send_message(chat_id, "✅ Оплата 1 USDT TRC20 підтверджена! Менеджер скоро зв'яжеться з Вами.")
                     notify_admin(MESSAGES["ADMIN_PAID_SUCCESS"].format(user_link=user_link, network="TRC20", tx_hash=tx_hash))
+                    
+                    # Повернення до головного меню після успішної дії
+                    show_main_menu_inline(chat_id) 
                 else:
+                    # Транзакція успішна, але дані не збігаються (потрібна ручна перевірка)
                     bot.send_message(chat_id, positive_client_msg)
                     notify_admin(MESSAGES["ADMIN_PAID_INVALID"].format(user_link=user_link, network="TRC20", tx_hash=tx_hash))
             else:
+                # Транзакція ще не підтверджена (потрібна ручна перевірка)
                 bot.send_message(chat_id, positive_client_msg)
                 notify_admin(MESSAGES["ADMIN_PAID_UNCONFIRMED"].format(user_link=user_link, network="TRC20", tx_hash=tx_hash))
         
@@ -383,7 +387,11 @@ def check_tx_hash(message):
                         
                 bot.send_message(chat_id, f"✅ Транзакція {tx_hash} підтверджена {network}! Менеджер скоро зв'яжеться з Вами.")
                 notify_admin(MESSAGES["ADMIN_PAID_SUCCESS"].format(user_link=user_link, network=network, tx_hash=tx_hash))
+                
+                # Повернення до головного меню після успішної дії
+                show_main_menu_inline(chat_id)
             else:
+                # Транзакція не підтверджена або некоректна (потрібна ручна перевірка)
                 bot.send_message(chat_id, positive_client_msg)
                 notify_admin(MESSAGES["ADMIN_PAID_UNCONFIRMED"].format(user_link=user_link, network=network, tx_hash=tx_hash))
                 
@@ -417,26 +425,41 @@ def handle_consultation_request(message):
         handle_unknown_messages(message)
         return
 
+    # Логіка обробки та сповіщення
     if message.content_type == 'text':
         query = message.text
         notify_admin(MESSAGES["ADMIN_NEW_CONSULT_TEXT"].format(user_link=user_link, chat_id=chat_id, query=query))
         
     elif message.content_type == 'voice':
         notify_admin(MESSAGES["ADMIN_NEW_CONSULT_VOICE"].format(user_link=user_link, chat_id=chat_id))
-        if ADMIN_IDS and ADMIN_IDS[0] != 0:
-            bot.forward_message(ADMIN_IDS[0], chat_id, message.message_id)
+        # НОВЕ: Пересилаємо голосове повідомлення ВСІМ адміністраторам
+        for admin_id in ADMIN_IDS:
+            if admin_id != 0:
+                try:
+                    bot.forward_message(admin_id, chat_id, message.message_id)
+                except telebot.apihelper.ApiException:
+                    pass
     
-    else: # Обробка фото/документів
+    else: # Обробка фото/документів/іншого медіа
         notify_admin(f"🔥 НОВИЙ ЗАПИТ НА КОНСУЛЬТАЦІЮ (ДОКУМЕНТ/ФОТО) від {user_link} (ID: `{chat_id}`)")
-        if ADMIN_IDS and ADMIN_IDS[0] != 0:
-            bot.forward_message(ADMIN_IDS[0], chat_id, message.message_id) 
+        # НОВЕ: Пересилаємо медіафайл ВСІМ адміністраторам
+        for admin_id in ADMIN_IDS:
+            if admin_id != 0:
+                try:
+                    bot.forward_message(admin_id, chat_id, message.message_id) 
+                except telebot.apihelper.ApiException:
+                    pass
 
+    # Фінальне повідомлення клієнту та повернення в меню
     bot.send_message(chat_id, "Дякуємо! Ваш запит отримано та передано менеджеру. Очікуйте відповіді найближчим часом.")
     
     # Очищення стану після отримання запиту
     with shelve.open(USER_STATE_DB_NAME) as db:
         if str(chat_id) in db:
             del db[str(chat_id)]
+            
+    # Повернення до головного меню
+    show_main_menu_inline(chat_id)
 
 
 # =========================
