@@ -1,31 +1,32 @@
 import os
 import requests
-from flask import Flask, request, jsonify
-from dotenv import load_dotenv
+from flask import Flask, request
 import telebot
 
 # =========================
-# Завантаження .env
+# Конфігурація
 # =========================
-load_dotenv()
-
 TOKEN = os.getenv("BOT_TOKEN")
 bot = telebot.TeleBot(TOKEN)
 
 ADMIN_IDS = [
-    int(os.getenv("ADMIN1_ID", "0")),
-    int(os.getenv("ADMIN2_ID", "0"))
+    int(os.getenv("ADMIN1_ID", 0)),
+    int(os.getenv("ADMIN2_ID", 0))
 ]
 
-NOWPAYMENTS_API_KEY = os.getenv("NOWPAYMENTS_API_KEY")
-IPN_SECRET = os.getenv("IPN_SECRET")
+# Гаманці для оплати
+WALLETS = {
+    "TRC20": "TT2BVxXgZuMbspJM2DTuntnTetnY5e8ntF",
+    "BSC": "0xc8872cac097911Bfa3203d5c9225c4CdE2A882B5",
+    "ETH": "0xc8872cac097911Bfa3203d5c9225c4CdE2A882B5"
+}
 
-# =========================
+ETH_BSC_API_KEY = os.getenv("ETH_BSC_API_KEY")
+
 # Послуги
-# =========================
 SERVICES = {
     "ВИЇЗД": {
-        "text": "Білий квиток: Ваш Шлях до Свободи та Спокою\nВи отримуєте повну легальну підтримку для виїзду за кордон.",
+        "text": "Білий квиток: Ваш Шлях до Свободи та Спокою\nПовна легальна підтримка для виїзду за кордон.",
         "docs": ["Тимчасове посвідчення", "ВЛК", "Довідка на право на виїзд"]
     },
     "ІНВАЛІДНІСТЬ": {
@@ -33,7 +34,7 @@ SERVICES = {
         "docs": ["ВЛК", "Довідка ЕКОПФ (МСЕК)", "Право на пенсію"]
     },
     "ВІДТЕРМІНУВАННЯ": {
-        "text": "Отстрочка на рік робимо протягом 3-5 днів по стану здоров'я (ВЛК). Можна пересуватися по Україні.",
+        "text": "Отстрочка на год робимо протягом 3-5 днів по стану здоров'я (ВЛК). Можна пересуватися по Україні.",
         "docs": ["Тимчасове посвідчення", "Довідка (відтермінування на рік)", "ВЛК"]
     },
     "ЗВІЛЬНЕННЯ": {
@@ -42,11 +43,12 @@ SERVICES = {
     }
 }
 
-# =========================
-# Flask сервер
-# =========================
+# Flask
 app = Flask(__name__)
 
+# =========================
+# Функції
+# =========================
 def notify_admin(text):
     for admin_id in ADMIN_IDS:
         if admin_id != 0:
@@ -56,61 +58,22 @@ def send_service_details(chat_id, service_name):
     service = SERVICES[service_name]
     markup = telebot.types.InlineKeyboardMarkup()
     markup.add(
-        telebot.types.InlineKeyboardButton("💬 Консультація", url="https://t.me/uristcord"),
-        telebot.types.InlineKeyboardButton("💰 Оплата 1 USDT", callback_data="pay_usdt"),
-        telebot.types.InlineKeyboardButton("🔙 Назад", callback_data="back")
+        telebot.types.InlineKeyboardButton("💬 Консультація", url="https://t.me/uristcord")
     )
+    markup.add(telebot.types.InlineKeyboardButton("🔙 Назад", callback_data="back"))
     doc_text = "\n".join([f"• {d}" for d in service["docs"]])
-    full_text = f"*{service_name}*\n\n{service['text']}\n\n*Документи, які ви отримуєте:*\n{doc_text}"
+    full_text = f"*{service_name}*\n\n{service['text']}\n\n*Документи:*\n{doc_text}"
     bot.send_message(chat_id, full_text, parse_mode="Markdown", reply_markup=markup)
 
 # =========================
-# Webhook
-# =========================
-@app.route('/' + TOKEN, methods=['POST'])
-def getMessage():
-    json_str = request.stream.read().decode("utf-8")
-    update = telebot.types.Update.de_json(json_str)
-    bot.process_new_updates([update])
-    return "!", 200
-
-@app.route("/")
-def webhook():
-    bot.remove_webhook()
-    bot.set_webhook(url=f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/{TOKEN}")
-    return "Bot is running via webhook", 200
-
-# =========================
-# IPN для оплати
-# =========================
-@app.route("/ipn", methods=["POST"])
-def ipn():
-    secret = request.headers.get("X-IPN-Secret")
-    if secret != IPN_SECRET:
-        return jsonify({"status": "unauthorized"}), 403
-
-    data = request.json
-    user_id = data.get("order_id")
-    status = data.get("payment_status")
-    currency = data.get("pay_currency")
-    amount = data.get("price_amount")
-
-    if status == "finished" and user_id:
-        bot.send_message(user_id, f"✅ Оплата {amount} {currency} підтверджена! Дякуємо за оплату.")
-        notify_admin(f"Користувач {user_id} сплатив {amount} {currency}")
-        return jsonify({"status": "ok"}), 200
-    return jsonify({"status": "failed"}), 400
-
-# =========================
-# Команди
+# Головне меню
 # =========================
 @bot.message_handler(commands=['start'])
 def start(message):
     chat_id = message.chat.id
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.row("⚖️ Послуги", "🕒 Запис на консультацію")
-    markup.row("ℹ️ Про компанію", "💬 Консультація")
-
+    markup.row("⚖️ Послуги", "Оплата USDT")
+    markup.row("💬 Консультація")
     welcome_text = (
         "💼 *Юридичні послуги Kovalova Stanislava*\n\n"
         "Вітаємо вас у преміум юридичному сервісі.\n"
@@ -120,7 +83,7 @@ def start(message):
     notify_admin(f"Новий користувач натиснув /start: {chat_id} ({message.from_user.first_name})")
 
 # =========================
-# Основні блоки
+# Послуги
 # =========================
 @bot.message_handler(func=lambda m: m.text == "⚖️ Послуги")
 def services_handler(message):
@@ -143,68 +106,86 @@ def service_handler(message):
     send_service_details(message.chat.id, message.text)
 
 # =========================
-# Callback для кнопок Inline
+# Оплата USDT
 # =========================
-@bot.callback_query_handler(func=lambda call: True)
-def callback_inline(call):
-    if call.data == "back":
-        services_handler(call.message)
-    elif call.data == "pay_usdt":
-        create_nowpayments_invoice(call.message)
-
-# =========================
-# Функція створення інвойсу NowPayments
-# =========================
-def create_nowpayments_invoice(message):
+@bot.message_handler(func=lambda m: m.text == "Оплата USDT")
+def choose_network(message):
     chat_id = message.chat.id
-    amount = 1
-    currency = "usdttrc20"
-
-    headers = {"x-api-key": NOWPAYMENTS_API_KEY, "Content-Type": "application/json"}
-    payload = {
-        "price_amount": amount,
-        "price_currency": currency,
-        "pay_currency": currency,
-        "order_id": str(chat_id),
-        "order_description": "Оплата юридичних послуг",
-        "success_url": f"https://t.me/{bot.get_me().username}",
-        "cancel_url": f"https://t.me/{bot.get_me().username}"
-    }
-
-    try:
-        response = requests.post("https://api.nowpayments.io/v1/payment", json=payload, headers=headers)
-        data = response.json()
-        payment_url = data.get("invoice_url")
-
-        if payment_url:
-            bot.send_message(chat_id, f"💳 Натисніть для оплати 👇\n{payment_url}")
-        else:
-            bot.send_message(chat_id, "⚠️ Не вдалося створити оплату. Спробуйте пізніше.")
-    except Exception as e:
-        bot.send_message(chat_id, f"❌ Помилка: {e}")
-
-# =========================
-# Запис на консультацію
-# =========================
-@bot.message_handler(func=lambda m: m.text == "🕒 Запис на консультацію")
-def consult(message):
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add(
-        telebot.types.KeyboardButton("Надіслати номер телефону", request_contact=True),
-        telebot.types.KeyboardButton("💬 Написати юристу"),
-        telebot.types.KeyboardButton("🔙 Назад")
-    )
-    bot.send_message(
-        message.chat.id,
-        "📞 Для запису на консультацію — залиште свій номер телефону або напишіть юристу:",
-        reply_markup=markup
-    )
+    markup.row("TRC20", "BSC", "ETH")
+    markup.row("🔙 Назад")
+    bot.send_message(chat_id, "Оберіть мережу для оплати 1 USDT:", reply_markup=markup)
 
-@bot.message_handler(content_types=['contact'])
-def handle_contact(message):
-    contact = message.contact.phone_number
-    bot.send_message(message.chat.id, f"Дякуємо! Ми отримали ваш номер: {contact}")
-    notify_admin(f"Користувач надіслав номер телефону: {contact} (ID: {message.chat.id})")
+@bot.message_handler(func=lambda m: m.text in ["TRC20", "BSC", "ETH"])
+def send_wallet_info(message):
+    chat_id = message.chat.id
+    network = message.text
+    wallet = WALLETS[network]
+    amount = 1
+    text = (
+        f"💳 Оплата {amount} USDT через {network}\n\n"
+        f"Адреса для переказу:\n`{wallet}`\n\n"
+        "Після переказу надішліть боту TX Hash транзакції для перевірки."
+    )
+    bot.send_message(chat_id, text, parse_mode="Markdown")
+
+# =========================
+# Перевірка TX Hash
+# =========================
+@bot.message_handler(func=lambda m: m.text.startswith("0x") or m.text.startswith("T"))
+def check_tx_hash(message):
+    tx_hash = message.text.strip()
+    chat_id = message.chat.id
+
+    if tx_hash.startswith("T"):  # TRC20
+        url = f"https://apilist.tronscan.org/api/transaction-info?hash={tx_hash}"
+        try:
+            resp = requests.get(url).json()
+            to_address = resp.get("to")
+            amount = int(resp.get("contractData", {}).get("amount", 0)) / 1_000_000
+            confirmed = resp.get("ret", [{}])[0].get("contractRet") == "SUCCESS"
+            if confirmed and to_address == WALLETS["TRC20"] and amount == 1:
+                bot.send_message(chat_id, f"✅ Оплата {amount} USDT TRC20 підтверджена!")
+                notify_admin(f"Користувач {chat_id} сплатив {amount} USDT TRC20. TX: {tx_hash}")
+            else:
+                bot.send_message(chat_id, f"❌ Транзакція не підтверджена або дані не збігаються")
+        except Exception as e:
+            bot.send_message(chat_id, f"❌ Помилка TRC20: {e}")
+    elif tx_hash.startswith("0x"):  # BSC / ETH
+        chain_id = 56
+        network_name = "BSC"
+        url = f"https://api.etherscan.io/v2/api?chainid={chain_id}&module=proxy&action=eth_getTransactionByHash&txhash={tx_hash}&apikey={ETH_BSC_API_KEY}"
+        try:
+            resp = requests.get(url).json()
+            tx = resp.get("result")
+            if not tx:
+                bot.send_message(chat_id, "❌ Транзакція не знайдена")
+                return
+            to_address = tx.get("to").lower()
+            value = int(tx.get("value", "0"), 16) / 1e6
+            if to_address == WALLETS["BSC"].lower() and value == 1:
+                bot.send_message(chat_id, f"✅ Оплата {value} USDT {network_name} підтверджена!")
+                notify_admin(f"Користувач {chat_id} сплатив {value} USDT {network_name}. TX: {tx_hash}")
+            else:
+                bot.send_message(chat_id, f"❌ Транзакція не підтверджена або дані не збігаються")
+        except Exception as e:
+            bot.send_message(chat_id, f"❌ Помилка {network_name}: {e}")
+
+# =========================
+# Flask webhook
+# =========================
+@app.route('/' + TOKEN, methods=['POST'])
+def getMessage():
+    json_str = request.stream.read().decode("utf-8")
+    update = telebot.types.Update.de_json(json_str)
+    bot.process_new_updates([update])
+    return "!", 200
+
+@app.route("/")
+def webhook():
+    bot.remove_webhook()
+    bot.set_webhook(url=f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/{TOKEN}")
+    return "Bot is running via webhook", 200
 
 # =========================
 # Запуск сервера
