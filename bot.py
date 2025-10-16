@@ -14,7 +14,7 @@ ADMIN_IDS = [
     int(os.getenv("ADMIN2_ID", 0))
 ]
 
-# Гаманці для оплати
+# Гаманці
 WALLETS = {
     "TRC20": "TT2BVxXgZuMbspJM2DTuntnTetnY5e8ntF",
     "BSC": "0xc8872cac097911Bfa3203d5c9225c4CdE2A882B5",
@@ -137,7 +137,8 @@ def check_tx_hash(message):
     tx_hash = message.text.strip()
     chat_id = message.chat.id
 
-    if tx_hash.startswith("T"):  # TRC20
+    # TRC20
+    if tx_hash.startswith("T"):
         url = f"https://apilist.tronscan.org/api/transaction-info?hash={tx_hash}"
         try:
             resp = requests.get(url).json()
@@ -151,19 +152,22 @@ def check_tx_hash(message):
                 bot.send_message(chat_id, f"❌ Транзакція не підтверджена або дані не збігаються")
         except Exception as e:
             bot.send_message(chat_id, f"❌ Помилка TRC20: {e}")
-    elif tx_hash.startswith("0x"):  # BSC / ETH
+
+    # BSC / ETH
+    elif tx_hash.startswith("0x"):
+        # Визначаємо мережу за замовчуванням BSC
         chain_id = 56
         network_name = "BSC"
         url = f"https://api.etherscan.io/v2/api?chainid={chain_id}&module=proxy&action=eth_getTransactionByHash&txhash={tx_hash}&apikey={ETH_BSC_API_KEY}"
         try:
             resp = requests.get(url).json()
             tx = resp.get("result")
-            if not tx:
-                bot.send_message(chat_id, "❌ Транзакція не знайдена")
+            if not isinstance(tx, dict):
+                bot.send_message(chat_id, "❌ Транзакція не знайдена або формат відповіді некоректний")
                 return
-            to_address = tx.get("to").lower()
+            to_address = tx.get("to", "").lower()
             value = int(tx.get("value", "0"), 16) / 1e6
-            if to_address == WALLETS["BSC"].lower() and value == 1:
+            if to_address == WALLETS[network_name].lower() and value == 1:
                 bot.send_message(chat_id, f"✅ Оплата {value} USDT {network_name} підтверджена!")
                 notify_admin(f"Користувач {chat_id} сплатив {value} USDT {network_name}. TX: {tx_hash}")
             else:
@@ -184,11 +188,4 @@ def getMessage():
 @app.route("/")
 def webhook():
     bot.remove_webhook()
-    bot.set_webhook(url=f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/{TOKEN}")
-    return "Bot is running via webhook", 200
-
-# =========================
-# Запуск сервера
-# =========================
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    bot.set_webhook(url=f"https://{os
