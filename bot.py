@@ -13,7 +13,8 @@ TOKEN = os.getenv("BOT_TOKEN")
 # Переконайтеся, що змінні оточення BOT_TOKEN, ADMIN1_ID, ETH_BSC_API_KEY встановлені
 bot = telebot.TeleBot(TOKEN) 
 ADMIN_IDS = [int(os.getenv("ADMIN1_ID", 0)), int(os.getenv("ADMIN2_ID", 0))]
-TELEGRAM_LAWYER_USERNAME = os.getenv("LAWYER_USERNAME", "your_lawyer_username") # <-- ЗМІНІТЬ НА РЕАЛЬНИЙ USERNAME ЮРИСТА
+# !!! ВСТАНОВІТЬ ВАШ РЕАЛЬНИЙ USERNAME ЮРИСТА НА RENDER !!!
+TELEGRAM_LAWYER_USERNAME = os.getenv("LAWYER_USERNAME", "your_lawyer_username") 
 
 # Гаманці
 WALLETS = {
@@ -71,7 +72,8 @@ MESSAGES = {
     "ADMIN_PAID_SUCCESS": "Користувач {user_link} сплатив 1 USDT {network}. TX: `{tx_hash}`",
     "ADMIN_PAID_INVALID": "⚠️ НЕПРАВИЛЬНА СУМА/АДРЕСА ({network}) від {user_link}. TX: `{tx_hash}`",
     "ADMIN_PAID_UNCONFIRMED": "⚠️ НЕПІДТВЕРДЖЕНА {network} від {user_link}. TX: `{tx_hash}`",
-    "ADMIN_NEW_CONSULT_TEXT": "🔥 НОВИЙ ЗАПИТ НА КОНСУЛЬТАЦІЮ від {user_link} (ID: `{chat_id}`):\n\n{query}",
+    # Використовуємо HTML-тег <code> для запиту, щоб уникнути помилок Markdown
+    "ADMIN_NEW_CONSULT_TEXT": "🔥 НОВИЙ ЗАПИТ НА КОНСУЛЬТАЦІЮ від {user_link} (ID: `{chat_id}`):\n\n<code>{query}</code>",
     "ADMIN_NEW_CONSULT_VOICE": "🔥 НОВИЙ ГОЛОСОВИЙ ЗАПИТ НА КОНСУЛЬТАЦІЮ від {user_link} (ID: `{chat_id}`)",
 }
 
@@ -82,17 +84,15 @@ app = Flask(__name__)
 # =========================
 # Допоміжні функції
 # =========================
-def notify_admin(text):
-    """Надсилає повідомлення всім адміністраторам (в Markdown)."""
+def notify_admin(text, parse_mode="Markdown"):
+    """Надсилає повідомлення всім адміністраторам."""
     success = False
     for admin_id in ADMIN_IDS:
         if admin_id != 0:
             try:
-                bot.send_message(admin_id, text, parse_mode="Markdown")
+                bot.send_message(admin_id, text, parse_mode=parse_mode)
                 success = True
             except telebot.apihelper.ApiException as e:
-                # Це критичне місце. Якщо помилка виникає тут, значить, ID коректний, 
-                # але користувач, можливо, заблокував бота або не писав йому /start.
                 print(f"Помилка відправки повідомлення адміністратору {admin_id}: {e}")
     return success
 
@@ -115,10 +115,9 @@ def show_main_menu_inline(chat_id, text=MESSAGES["MAIN_MENU_RETURN"], message_id
     if message_id:
         bot.edit_message_text(text, chat_id, message_id, parse_mode="Markdown", reply_markup=markup)
     else:
-        # Відправка основного меню
         bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
         
-        # ВИКОРИСТАННЯ НЕВИДИМОГО СИМВОЛА '\u200b' ЗАМІСТЬ КРАПКИ
+        # Приховуємо звичайну клавіатуру, якщо вона була
         try:
             bot.send_message(chat_id, "\u200b", reply_markup=telebot.types.ReplyKeyboardRemove())
         except Exception:
@@ -198,14 +197,11 @@ def start(message):
 def test_admin_notifications(message):
     chat_id = message.chat.id
     
-    # 1. Відправка повідомлення назад користувачеві 
     bot.send_message(chat_id, "✅ Тест 1: Я бачу Ваш чат. Зараз перевіряю відправку адмін-сповіщення.")
 
-    # 2. Виклик функції notify_admin
     test_message = f"✅ ТЕСТ АДМІН-СИСТЕМИ УСПІШНИЙ!\nБот бачить ID: `{ADMIN_IDS}`"
     success = notify_admin(test_message) 
     
-    # 3. Фінальне підтвердження
     if success:
          bot.send_message(chat_id, "✅ Тест 2: Сповіщення надіслано. Перевірте, чи прийшло воно до Вас як адміністратору.")
     else:
@@ -334,7 +330,7 @@ def handle_network_selection(call):
 # =========================
 # Перевірка TX Hash (НАДІЙНІСТЬ)
 # =========================
-@bot.message_handler(func=lambda m: m.text.startswith("0x") or m.text.startswith("T"))
+@bot.message_handler(func=lambda m: m.text and (m.text.startswith("0x") or m.text.startswith("T")))
 def check_tx_hash(message):
     tx_hash = message.text.strip()
     chat_id = message.chat.id
@@ -369,7 +365,8 @@ def check_tx_hash(message):
             
             if confirmed:
                 to_address = resp.get("to")
-                amount = int(resp.get("contractData", {}).get("amount", 0)) / 1_000_000
+                # Всі суми на TronScan повертаються в suns (10^6)
+                amount = int(resp.get("contractData", {}).get("amount", 0)) / 1_000_000 
                 
                 if to_address == WALLETS["TRC20"] and amount == 1:
                     with shelve.open(HASH_DB_NAME) as db:
@@ -381,14 +378,11 @@ def check_tx_hash(message):
                     bot.send_message(chat_id, "✅ Оплата 1 USDT TRC20 підтверджена! Менеджер скоро зв'яжеться з Вами.")
                     notify_admin(MESSAGES["ADMIN_PAID_SUCCESS"].format(user_link=user_link, network="TRC20", tx_hash=tx_hash))
                     
-                    # Повернення до головного меню після успішної дії
                     show_main_menu_inline(chat_id) 
                 else:
-                    # Транзакція успішна, але дані не збігаються (потрібна ручна перевірка)
                     bot.send_message(chat_id, positive_client_msg)
                     notify_admin(MESSAGES["ADMIN_PAID_INVALID"].format(user_link=user_link, network="TRC20", tx_hash=tx_hash))
             else:
-                # Транзакція ще не підтверджена (потрібна ручна перевірка)
                 bot.send_message(chat_id, positive_client_msg)
                 notify_admin(MESSAGES["ADMIN_PAID_UNCONFIRMED"].format(user_link=user_link, network="TRC20", tx_hash=tx_hash))
         
@@ -414,10 +408,8 @@ def check_tx_hash(message):
                 bot.send_message(chat_id, f"✅ Транзакція {tx_hash} підтверджена {network}! Менеджер скоро зв'яжеться з Вами.")
                 notify_admin(MESSAGES["ADMIN_PAID_SUCCESS"].format(user_link=user_link, network=network, tx_hash=tx_hash))
                 
-                # Повернення до головного меню після успішної дії
                 show_main_menu_inline(chat_id)
             else:
-                # Транзакція не підтверджена або некоректна (потрібна ручна перевірка)
                 bot.send_message(chat_id, positive_client_msg)
                 notify_admin(MESSAGES["ADMIN_PAID_UNCONFIRMED"].format(user_link=user_link, network=network, tx_hash=tx_hash))
                 
@@ -447,18 +439,17 @@ def handle_consultation_request(message):
         current_state = db.get(str(chat_id))
 
     if current_state != "AWAITING_CONSULTATION":
-        # Якщо стан не очікує консультації, передаємо в обробник невідомих
         handle_unknown_messages(message)
         return
 
     # Логіка обробки та сповіщення
     if message.content_type == 'text':
         query = message.text
-        notify_admin(MESSAGES["ADMIN_NEW_CONSULT_TEXT"].format(user_link=user_link, chat_id=chat_id, query=query))
+        # Надсилаємо HTML, щоб <code> коректно працював
+        notify_admin(MESSAGES["ADMIN_NEW_CONSULT_TEXT"].format(user_link=user_link, chat_id=chat_id, query=query), parse_mode="HTML")
         
     elif message.content_type == 'voice':
         notify_admin(MESSAGES["ADMIN_NEW_CONSULT_VOICE"].format(user_link=user_link, chat_id=chat_id))
-        # Пересилаємо голосове повідомлення ВСІМ адміністраторам
         for admin_id in ADMIN_IDS:
             if admin_id != 0:
                 try:
@@ -468,7 +459,6 @@ def handle_consultation_request(message):
     
     else: # Обробка фото/документів/іншого медіа
         notify_admin(f"🔥 НОВИЙ ЗАПИТ НА КОНСУЛЬТАЦІЮ (ДОКУМЕНТ/ФОТО) від {user_link} (ID: `{chat_id}`)")
-        # Пересилаємо медіафайл ВСІМ адміністраторам
         for admin_id in ADMIN_IDS:
             if admin_id != 0:
                 try:
@@ -479,12 +469,11 @@ def handle_consultation_request(message):
     # Фінальне повідомлення клієнту та повернення в меню
     bot.send_message(chat_id, "Дякуємо! Ваш запит отримано та передано менеджеру. Очікуйте відповіді найближчим часом.")
     
-    # Очищення стану після отримання запиту
+    # Очищення стану та повернення до головного меню
     with shelve.open(USER_STATE_DB_NAME) as db:
         if str(chat_id) in db:
             del db[str(chat_id)]
             
-    # Повернення до головного меню
     show_main_menu_inline(chat_id)
 
 
@@ -500,21 +489,28 @@ def handle_unknown_messages(message):
     
     if current_state in ["TRC20", "BSC", "ETH"]:
         bot.send_message(chat_id, "⚠️ Очікую TX Hash для підтвердження оплати. Якщо ви передумали, скористайтеся командою /start.")
-    elif current_state == "AWAITING_CONSULTATION":
-        # Це вже обробляється в handle_consultation_request, але тут на всяк випадок
-        pass 
     else:
         show_main_menu_inline(chat_id, text="Я вас не зрозумів. Будь ласка, оберіть дію з меню:")
 
         
 # =========================
-# Flask webhook (Інфраструктура)
+# Flask webhook (КРИТИЧНА ФУНКЦІЯ)
 # =========================
 @app.route('/' + TOKEN, methods=['POST'])
 def getMessage():
-    json_str = request.stream.read().decode("utf-8")
-    update = telebot.types.Update.de_json(json_str)
-    bot.process_new_updates([update])
+    """
+    Обробляє вхідні оновлення від Telegram.
+    Завжди повертає 200 OK, щоб уникнути помилки 502/Webhook Failure.
+    """
+    try:
+        json_str = request.stream.read().decode("utf-8")
+        update = telebot.types.Update.de_json(json_str)
+        bot.process_new_updates([update]) 
+    except Exception as e:
+        # Логування критичної помилки на Render, якщо вона виникне
+        print(f"Критична помилка обробки оновлення: {e}")
+        
+    # ГАРАНТОВАНЕ повернення 200 OK
     return "!", 200
 
 @app.route("/")
