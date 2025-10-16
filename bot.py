@@ -1,12 +1,13 @@
 import os
+import requests
+from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 import telebot
-from flask import Flask, request, jsonify
 
 # =========================
-# Ініціалізація
+# Завантаження .env
 # =========================
-load_dotenv()  # завантаження .env
+load_dotenv()
 
 TOKEN = os.getenv("BOT_TOKEN")
 bot = telebot.TeleBot(TOKEN)
@@ -15,6 +16,9 @@ ADMIN_IDS = [
     int(os.getenv("ADMIN1_ID", "0")),
     int(os.getenv("ADMIN2_ID", "0"))
 ]
+
+NOWPAYMENTS_API_KEY = os.getenv("NOWPAYMENTS_API_KEY")
+IPN_SECRET = os.getenv("IPN_SECRET")
 
 # =========================
 # Послуги
@@ -29,7 +33,7 @@ SERVICES = {
         "docs": ["ВЛК", "Довідка ЕКОПФ (МСЕК)", "Право на пенсію"]
     },
     "ВІДТЕРМІНУВАННЯ": {
-        "text": "Отстрочка на рік робиться протягом 3-5 днів по стану здоров'я (ВЛК). Можна пересуватися по Україні.",
+        "text": "Отстрочка на рік робимо протягом 3-5 днів по стану здоров'я (ВЛК). Можна пересуватися по Україні.",
         "docs": ["Тимчасове посвідчення", "Довідка (відтермінування на рік)", "ВЛК"]
     },
     "ЗВІЛЬНЕННЯ": {
@@ -53,10 +57,7 @@ def send_service_details(chat_id, service_name):
     markup = telebot.types.InlineKeyboardMarkup()
     markup.add(
         telebot.types.InlineKeyboardButton("💬 Консультація", url="https://t.me/uristcord"),
-        telebot.types.InlineKeyboardButton(
-            "💰 Оплата 1 USDT TRC20",
-            url=f"https://your-payment-provider.com/pay?amount=1&currency=USDT_TRC&user_id={chat_id}"
-        ),
+        telebot.types.InlineKeyboardButton("💰 Оплата 1 USDT", callback_data="pay_usdt"),
         telebot.types.InlineKeyboardButton("🔙 Назад", callback_data="back")
     )
     doc_text = "\n".join([f"• {d}" for d in service["docs"]])
@@ -80,25 +81,24 @@ def webhook():
     return "Bot is running via webhook", 200
 
 # =========================
-# IPN (підтвердження оплати)
+# IPN для оплати
 # =========================
 @app.route("/ipn", methods=["POST"])
 def ipn():
     secret = request.headers.get("X-IPN-Secret")
-    if secret != os.getenv("IPN_SECRET"):
+    if secret != IPN_SECRET:
         return jsonify({"status": "unauthorized"}), 403
 
     data = request.json
-    user_id = data.get("user_id")
-    amount = data.get("amount")
-    currency = data.get("currency")
-    status = data.get("status")
+    user_id = data.get("order_id")
+    status = data.get("payment_status")
+    currency = data.get("pay_currency")
+    amount = data.get("price_amount")
 
-    if status == "success" and user_id:
+    if status == "finished" and user_id:
         bot.send_message(user_id, f"✅ Оплата {amount} {currency} підтверджена! Дякуємо за оплату.")
         notify_admin(f"Користувач {user_id} сплатив {amount} {currency}")
         return jsonify({"status": "ok"}), 200
-
     return jsonify({"status": "failed"}), 400
 
 # =========================
@@ -143,11 +143,45 @@ def service_handler(message):
     send_service_details(message.chat.id, message.text)
 
 # =========================
-# Callback “Назад”
+# Callback для кнопок Inline
 # =========================
-@bot.callback_query_handler(func=lambda call: call.data == "back")
-def back_handler(call):
-    services_handler(call.message)
+@bot.callback_query_handler(func=lambda call: True)
+def callback_inline(call):
+    if call.data == "back":
+        services_handler(call.message)
+    elif call.data == "pay_usdt":
+        create_nowpayments_invoice(call.message)
+
+# =========================
+# Функція створення інвойсу NowPayments
+# =========================
+def create_nowpayments_invoice(message):
+    chat_id = message.chat.id
+    amount = 1
+    currency = "usdttrc20"
+
+    headers = {"x-api-key": NOWPAYMENTS_API_KEY, "Content-Type": "application/json"}
+    payload = {
+        "price_amount": amount,
+        "price_currency": currency,
+        "pay_currency": currency,
+        "order_id": str(chat_id),
+        "order_description": "Оплата юридичних послуг",
+        "success_url": f"https://t.me/{bot.get_me().username}",
+        "cancel_url": f"https://t.me/{bot.get_me().username}"
+    }
+
+    try:
+        response = requests.post("https://api.nowpayments.io/v1/payment", json=payload, headers=headers)
+        data = response.json()
+        payment_url = data.get("invoice_url")
+
+        if payment_url:
+            bot.send_message(chat_id, f"💳 Натисніть для оплати 👇\n{payment_url}")
+        else:
+            bot.send_message(chat_id, "⚠️ Не вдалося створити оплату. Спробуйте пізніше.")
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ Помилка: {e}")
 
 # =========================
 # Запис на консультацію
