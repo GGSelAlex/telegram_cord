@@ -8,11 +8,7 @@ import telebot
 # =========================
 TOKEN = os.getenv("BOT_TOKEN")
 bot = telebot.TeleBot(TOKEN)
-
-ADMIN_IDS = [
-    int(os.getenv("ADMIN1_ID", 0)),
-    int(os.getenv("ADMIN2_ID", 0))
-]
+ADMIN_IDS = [int(os.getenv("ADMIN1_ID", 0)), int(os.getenv("ADMIN2_ID", 0))]
 
 # Гаманці
 WALLETS = {
@@ -20,7 +16,6 @@ WALLETS = {
     "BSC": "0xc8872cac097911Bfa3203d5c9225c4CdE2A882B5",
     "ETH": "0xc8872cac097911Bfa3203d5c9225c4CdE2A882B5"
 }
-
 ETH_BSC_API_KEY = os.getenv("ETH_BSC_API_KEY")
 
 # Послуги
@@ -45,6 +40,7 @@ SERVICES = {
 
 # Flask
 app = Flask(__name__)
+user_network_choice = {}  # chat_id -> мережа
 
 # =========================
 # Функції
@@ -56,54 +52,50 @@ def notify_admin(text):
 
 def send_service_details(chat_id, service_name):
     service = SERVICES[service_name]
-    markup = telebot.types.InlineKeyboardMarkup()
-    markup.add(
-        telebot.types.InlineKeyboardButton("💬 Консультація", url="https://t.me/uristcord")
-    )
-    markup.add(telebot.types.InlineKeyboardButton("🔙 Назад", callback_data="back"))
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.row("💬 Консультація", "Оплата USDT")
+    markup.row("🔙 Назад")
     doc_text = "\n".join([f"• {d}" for d in service["docs"]])
     full_text = f"*{service_name}*\n\n{service['text']}\n\n*Документи:*\n{doc_text}"
     bot.send_message(chat_id, full_text, parse_mode="Markdown", reply_markup=markup)
 
 # =========================
-# Головне меню
+# Меню
 # =========================
 @bot.message_handler(commands=['start'])
 def start(message):
     chat_id = message.chat.id
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.row("⚖️ Послуги", "Оплата USDT")
+    markup.row("⚖️ Послуги")
     markup.row("💬 Консультація")
-    welcome_text = (
-        "💼 *Юридичні послуги Kovalova Stanislava*\n\n"
-        "Вітаємо вас у преміум юридичному сервісі.\n"
-        "Оберіть потрібний розділ нижче 👇"
-    )
-    bot.send_message(chat_id, welcome_text, parse_mode="Markdown", reply_markup=markup)
-    notify_admin(f"Новий користувач натиснув /start: {chat_id} ({message.from_user.first_name})")
+    bot.send_message(chat_id, "💼 *Юридичні послуги Kovalova Stanislava*\nВітаємо! Оберіть розділ 👇",
+                     parse_mode="Markdown", reply_markup=markup)
+    notify_admin(f"Новий користувач: {chat_id} ({message.from_user.first_name})")
 
-# =========================
-# Послуги
-# =========================
 @bot.message_handler(func=lambda m: m.text == "⚖️ Послуги")
 def services_handler(message):
+    chat_id = message.chat.id
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row("ВИЇЗД", "ВІДТЕРМІНУВАННЯ")
     markup.row("ІНВАЛІДНІСТЬ", "ЗВІЛЬНЕННЯ")
     markup.row("🔙 Назад")
-    bot.send_message(
-        message.chat.id,
-        "Ми надаємо:\n"
-        "🔹 Виїзд за кордон\n"
-        "🔹 Відтермінування мобілізації\n"
-        "🔹 Отримання інвалідності\n"
-        "🔹 Звільнення зі служби в ЗСУ",
-        reply_markup=markup
-    )
+    bot.send_message(chat_id, "Ми надаємо:", reply_markup=markup)
 
 @bot.message_handler(func=lambda m: m.text in SERVICES.keys())
 def service_handler(message):
     send_service_details(message.chat.id, message.text)
+
+# =========================
+# Назад
+# =========================
+@bot.message_handler(func=lambda m: m.text == "🔙 Назад")
+def go_back(message):
+    chat_id = message.chat.id
+    # Якщо користувач обрав мережу для оплати — повернути вибір мережі
+    if chat_id in user_network_choice:
+        choose_network(message)
+    else:
+        services_handler(message)
 
 # =========================
 # Оплата USDT
@@ -120,13 +112,9 @@ def choose_network(message):
 def send_wallet_info(message):
     chat_id = message.chat.id
     network = message.text
+    user_network_choice[chat_id] = network
     wallet = WALLETS[network]
-    amount = 1
-    text = (
-        f"💳 Оплата {amount} USDT через {network}\n\n"
-        f"Адреса для переказу:\n`{wallet}`\n\n"
-        "Після переказу надішліть боту TX Hash транзакції для перевірки."
-    )
+    text = f"💳 Оплата 1 USDT через {network}\nАдреса: `{wallet}`\n\nНадішліть боту TX Hash для перевірки."
     bot.send_message(chat_id, text, parse_mode="Markdown")
 
 # =========================
@@ -136,43 +124,36 @@ def send_wallet_info(message):
 def check_tx_hash(message):
     tx_hash = message.text.strip()
     chat_id = message.chat.id
-
-    # TRC20
-    if tx_hash.startswith("T"):
-        url = f"https://apilist.tronscan.org/api/transaction-info?hash={tx_hash}"
-        try:
+    network = user_network_choice.get(chat_id)
+    if not network:
+        bot.send_message(chat_id, "❌ Спочатку оберіть мережу для оплати.")
+        return
+    try:
+        if network == "TRC20":
+            url = f"https://apilist.tronscan.org/api/transaction-info?hash={tx_hash}"
             resp = requests.get(url).json()
             to_address = resp.get("to")
             amount = int(resp.get("contractData", {}).get("amount", 0)) / 1_000_000
             confirmed = resp.get("ret", [{}])[0].get("contractRet") == "SUCCESS"
             if confirmed and to_address == WALLETS["TRC20"] and amount == 1:
-                bot.send_message(chat_id, f"✅ Оплата {amount} USDT TRC20 підтверджена!")
-                notify_admin(f"Користувач {chat_id} сплатив {amount} USDT TRC20. TX: {tx_hash}")
+                bot.send_message(chat_id, "✅ Оплата 1 USDT TRC20 підтверджена!")
+                notify_admin(f"Користувач {chat_id} сплатив 1 USDT TRC20. TX: {tx_hash}")
             else:
-                bot.send_message(chat_id, f"❌ Транзакція не підтверджена або дані не збігаються")
-        except Exception as e:
-            bot.send_message(chat_id, f"❌ Помилка TRC20: {e}")
-
-    # BSC / ETH
-    elif tx_hash.startswith("0x"):
-        chain_id = 56  # за замовчуванням BSC
-        network_name = "BSC"
-        url = f"https://api.etherscan.io/v2/api?chainid={chain_id}&module=proxy&action=eth_getTransactionByHash&txhash={tx_hash}&apikey={ETH_BSC_API_KEY}"
-        try:
+                bot.send_message(chat_id, "❌ Транзакція не підтверджена або дані не збігаються")
+        else:
+            if network == "BSC":
+                url = f"https://api.bscscan.com/api?module=transaction&action=gettxreceiptstatus&txhash={tx_hash}&apikey={ETH_BSC_API_KEY}"
+            else:
+                url = f"https://api.etherscan.io/api?module=transaction&action=gettxreceiptstatus&txhash={tx_hash}&apikey={ETH_BSC_API_KEY}"
             resp = requests.get(url).json()
-            tx = resp.get("result")
-            if not isinstance(tx, dict):
-                bot.send_message(chat_id, "❌ Транзакція не знайдена або формат відповіді некоректний")
-                return
-            to_address = tx.get("to", "").lower()
-            value = int(tx.get("value", "0"), 16) / 1e6
-            if to_address == WALLETS[network_name].lower() and value == 1:
-                bot.send_message(chat_id, f"✅ Оплата {value} USDT {network_name} підтверджена!")
-                notify_admin(f"Користувач {chat_id} сплатив {value} USDT {network_name}. TX: {tx_hash}")
+            status = resp.get("result", {}).get("status")
+            if status == "1":
+                bot.send_message(chat_id, f"✅ Транзакція {tx_hash} підтверджена {network}!")
+                notify_admin(f"Користувач {chat_id} сплатив 1 USDT {network}. TX: {tx_hash}")
             else:
-                bot.send_message(chat_id, f"❌ Транзакція не підтверджена або дані не збігаються")
-        except Exception as e:
-            bot.send_message(chat_id, f"❌ Помилка {network_name}: {e}")
+                bot.send_message(chat_id, f"❌ Транзакція ще не підтверджена або некоректна {network}")
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ Помилка {network}: {e}")
 
 # =========================
 # Flask webhook
