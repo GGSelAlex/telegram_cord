@@ -1,16 +1,71 @@
-import telebot
 import os
-from telebot import types
-from flask import Flask, request
+from dotenv import load_dotenv
+import telebot
+from flask import Flask, request, jsonify
 
-# --- Токен та адміністратори з Environment Variables ---
+# =========================
+# Ініціалізація
+# =========================
+load_dotenv()  # завантаження .env
+
 TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_IDS = [int(os.getenv("ADMIN1_ID")), int(os.getenv("ADMIN2_ID"))]
-
 bot = telebot.TeleBot(TOKEN)
+
+ADMIN_IDS = [
+    int(os.getenv("ADMIN1_ID", "0")),
+    int(os.getenv("ADMIN2_ID", "0"))
+]
+
+# =========================
+# Послуги
+# =========================
+SERVICES = {
+    "ВИЇЗД": {
+        "text": "Білий квиток: Ваш Шлях до Свободи та Спокою\nВи отримуєте повну легальну підтримку для виїзду за кордон.",
+        "docs": ["Тимчасове посвідчення", "ВЛК", "Довідка на право на виїзд"]
+    },
+    "ІНВАЛІДНІСТЬ": {
+        "text": "Група Інвалідності: Ваше Право на Захист та Соціальні Гарантії",
+        "docs": ["ВЛК", "Довідка ЕКОПФ (МСЕК)", "Право на пенсію"]
+    },
+    "ВІДТЕРМІНУВАННЯ": {
+        "text": "Отстрочка на рік робиться протягом 3-5 днів по стану здоров'я (ВЛК). Можна пересуватися по Україні.",
+        "docs": ["Тимчасове посвідчення", "Довідка (відтермінування на рік)", "ВЛК"]
+    },
+    "ЗВІЛЬНЕННЯ": {
+        "text": "Індивідуальний підхід та повний юридичний супровід для звільнення з ЗСУ.",
+        "docs": ["Пакет документів для звільнення", "ВЛК", "Рапорти та клопотання"]
+    }
+}
+
+# =========================
+# Flask сервер
+# =========================
 app = Flask(__name__)
 
-# --- Flask Webhook ---
+def notify_admin(text):
+    for admin_id in ADMIN_IDS:
+        if admin_id != 0:
+            bot.send_message(admin_id, text)
+
+def send_service_details(chat_id, service_name):
+    service = SERVICES[service_name]
+    markup = telebot.types.InlineKeyboardMarkup()
+    markup.add(
+        telebot.types.InlineKeyboardButton("💬 Консультація", url="https://t.me/uristcord"),
+        telebot.types.InlineKeyboardButton(
+            "💰 Оплата 1 USDT TRC20",
+            url=f"https://your-payment-provider.com/pay?amount=1&currency=USDT_TRC&user_id={chat_id}"
+        ),
+        telebot.types.InlineKeyboardButton("🔙 Назад", callback_data="back")
+    )
+    doc_text = "\n".join([f"• {d}" for d in service["docs"]])
+    full_text = f"*{service_name}*\n\n{service['text']}\n\n*Документи, які ви отримуєте:*\n{doc_text}"
+    bot.send_message(chat_id, full_text, parse_mode="Markdown", reply_markup=markup)
+
+# =========================
+# Webhook
+# =========================
 @app.route('/' + TOKEN, methods=['POST'])
 def getMessage():
     json_str = request.stream.read().decode("utf-8")
@@ -24,137 +79,101 @@ def webhook():
     bot.set_webhook(url=f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/{TOKEN}")
     return "Bot is running via webhook", 200
 
-# --- Старт і привітання ---
+# =========================
+# IPN (підтвердження оплати)
+# =========================
+@app.route("/ipn", methods=["POST"])
+def ipn():
+    secret = request.headers.get("X-IPN-Secret")
+    if secret != os.getenv("IPN_SECRET"):
+        return jsonify({"status": "unauthorized"}), 403
+
+    data = request.json
+    user_id = data.get("user_id")
+    amount = data.get("amount")
+    currency = data.get("currency")
+    status = data.get("status")
+
+    if status == "success" and user_id:
+        bot.send_message(user_id, f"✅ Оплата {amount} {currency} підтверджена! Дякуємо за оплату.")
+        notify_admin(f"Користувач {user_id} сплатив {amount} {currency}")
+        return jsonify({"status": "ok"}), 200
+
+    return jsonify({"status": "failed"}), 400
+
+# =========================
+# Команди
+# =========================
 @bot.message_handler(commands=['start'])
 def start(message):
-    # Привітальне повідомлення
+    chat_id = message.chat.id
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.row("⚖️ Послуги", "🕒 Запис на консультацію")
+    markup.row("ℹ️ Про компанію", "💬 Консультація")
+
     welcome_text = (
         "💼 *Юридичні послуги Kovalova Stanislava*\n\n"
         "Вітаємо вас у преміум юридичному сервісі.\n"
         "Оберіть потрібний розділ нижче 👇"
     )
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.row("⚖️ Послуги", "🕒 Запис на консультацію")
-    markup.row("ℹ️ Про компанію", "💬 Консультація")
-    bot.send_message(message.chat.id, welcome_text, parse_mode="Markdown", reply_markup=markup)
+    bot.send_message(chat_id, welcome_text, parse_mode="Markdown", reply_markup=markup)
+    notify_admin(f"Новий користувач натиснув /start: {chat_id} ({message.from_user.first_name})")
 
-    # Сповіщення для адміністраторів
-    admin_msg = f"Новий користувач: @{message.from_user.username or 'Немає username'}, ID: {message.from_user.id}"
-    for admin_id in ADMIN_IDS:
-        bot.send_message(admin_id, admin_msg)
-
-# --- Послуги ---
+# =========================
+# Основні блоки
+# =========================
 @bot.message_handler(func=lambda m: m.text == "⚖️ Послуги")
-def services(message):
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+def services_handler(message):
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row("ВИЇЗД", "ВІДТЕРМІНУВАННЯ")
     markup.row("ІНВАЛІДНІСТЬ", "ЗВІЛЬНЕННЯ")
-    markup.row("⬅️ Назад")
-    text = (
+    markup.row("🔙 Назад")
+    bot.send_message(
+        message.chat.id,
         "Ми надаємо:\n"
         "🔹 Виїзд за кордон\n"
         "🔹 Відтермінування мобілізації\n"
         "🔹 Отримання інвалідності\n"
-        "🔹 Звільнення зі служби в ЗСУ"
-    )
-    bot.send_message(message.chat.id, text, reply_markup=markup)
-
-# --- Деталі послуг ---
-def service_details_markup():
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("Консультація", url="https://t.me/uristcord"))
-    markup.add(types.InlineKeyboardButton("Оплата USDT TRC20", url="https://your_payment_link_here"))
-    return markup
-
-@bot.message_handler(func=lambda m: m.text == "ВИЇЗД")
-def service_vyezd(message):
-    text = (
-        "💳 *Виїзд за кордон*\n\n"
-        "Білий квиток: Ваш шлях до свободи та спокою.\n"
-        "Документи: Тимчасове посвідчення, ВЛК, Довідка на право виїзду."
-    )
-    bot.send_message(message.chat.id, text, parse_mode="Markdown", reply_markup=service_details_markup())
-
-@bot.message_handler(func=lambda m: m.text == "ІНВАЛІДНІСТЬ")
-def service_invalid(message):
-    text = (
-        "💳 *Інвалідність*\n\n"
-        "Група інвалідності (ІІ або ІІІ) та соціальні гарантії.\n"
-        "Документи: ЛЛК, довідка ЕКОПФ(МСЕК), право на пенсію."
-    )
-    bot.send_message(message.chat.id, text, parse_mode="Markdown", reply_markup=service_details_markup())
-
-@bot.message_handler(func=lambda m: m.text == "ВІДТЕРМІНУВАННЯ")
-def service_otst(message):
-    text = (
-        "💳 *Відтермінування*\n\n"
-        "Отримання відтермінування на рік по стану здоров'я.\n"
-        "Документи: Тимчасове посвідчення, Довідка (відтермінування на рік), ВЛК."
-    )
-    bot.send_message(message.chat.id, text, parse_mode="Markdown", reply_markup=service_details_markup())
-
-@bot.message_handler(func=lambda m: m.text == "ЗВІЛЬНЕННЯ")
-def service_release(message):
-    text = (
-        "💳 *Звільнення з ЗСУ*\n\n"
-        "Індивідуальний підхід та юридичні гарантії.\n"
-        "Документи: Офіційний договір та повний супровід."
-    )
-    bot.send_message(message.chat.id, text, parse_mode="Markdown", reply_markup=service_details_markup())
-
-# --- Запис на консультацію ---
-@bot.message_handler(func=lambda m: m.text == "🕒 Запис на консультацію")
-def consult(message):
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.row("Надіслати номер телефону")
-    markup.row("⬅️ Назад")
-    markup.row("Написати юристу")
-    bot.send_message(
-        message.chat.id,
-        "📞 Для запису на консультацію надішліть свій номер телефону або зв’яжіться з юристом:",
+        "🔹 Звільнення зі служби в ЗСУ",
         reply_markup=markup
     )
 
-@bot.message_handler(func=lambda m: m.text == "Надіслати номер телефону")
-def send_phone(message):
+@bot.message_handler(func=lambda m: m.text in SERVICES.keys())
+def service_handler(message):
+    send_service_details(message.chat.id, message.text)
+
+# =========================
+# Callback “Назад”
+# =========================
+@bot.callback_query_handler(func=lambda call: call.data == "back")
+def back_handler(call):
+    services_handler(call.message)
+
+# =========================
+# Запис на консультацію
+# =========================
+@bot.message_handler(func=lambda m: m.text == "🕒 Запис на консультацію")
+def consult(message):
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add(
+        telebot.types.KeyboardButton("Надіслати номер телефону", request_contact=True),
+        telebot.types.KeyboardButton("💬 Написати юристу"),
+        telebot.types.KeyboardButton("🔙 Назад")
+    )
     bot.send_message(
         message.chat.id,
-        "Натисніть кнопку нижче, щоб надіслати свій контакт:",
-        reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True).add(
-            types.KeyboardButton("Надіслати контакт", request_contact=True),
-            types.KeyboardButton("⬅️ Назад")
-        )
+        "📞 Для запису на консультацію — залиште свій номер телефону або напишіть юристу:",
+        reply_markup=markup
     )
 
 @bot.message_handler(content_types=['contact'])
 def handle_contact(message):
-    if message.contact is not None:
-        phone = message.contact.phone_number
-        for admin_id in ADMIN_IDS:
-            bot.send_message(admin_id, f"Номер користувача: {phone}\nID: {message.from_user.id}")
+    contact = message.contact.phone_number
+    bot.send_message(message.chat.id, f"Дякуємо! Ми отримали ваш номер: {contact}")
+    notify_admin(f"Користувач надіслав номер телефону: {contact} (ID: {message.chat.id})")
 
-@bot.message_handler(func=lambda m: m.text in ["⬅️ Назад", "Написати юристу"])
-def go_back(message):
-    start(message)
-
-# --- Про компанію ---
-@bot.message_handler(func=lambda m: m.text == "ℹ️ Про компанію")
-def about(message):
-    bot.send_message(
-        message.chat.id,
-        "Ми працюємо з 2022 року для підтримки та захисту чоловіків.\n"
-        "Kovalova Legal — преміальний сервіс юридичної допомоги."
-    )
-
-# --- Контакти ---
-@bot.message_handler(func=lambda m: m.text == "💬 Консультація")
-def contact(message):
-    bot.send_message(
-        message.chat.id,
-        "Натисніть, щоб написати юристу:\n👉 [Написати Ковалову](https://t.me/uristcord)",
-        parse_mode="Markdown"
-    )
-
-# --- Запуск Flask ---
+# =========================
+# Запуск сервера
+# =========================
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
