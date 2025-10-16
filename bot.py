@@ -155,8 +155,7 @@ def check_tx_hash(message):
 
     # BSC / ETH
     elif tx_hash.startswith("0x"):
-        # Визначаємо мережу за замовчуванням BSC
-        chain_id = 56
+        chain_id = 56  # за замовчуванням BSC
         network_name = "BSC"
         url = f"https://api.etherscan.io/v2/api?chainid={chain_id}&module=proxy&action=eth_getTransactionByHash&txhash={tx_hash}&apikey={ETH_BSC_API_KEY}"
         try:
@@ -188,4 +187,11 @@ def getMessage():
 @app.route("/")
 def webhook():
     bot.remove_webhook()
-    bot.set_webhook(url=f"https://{os
+    bot.set_webhook(url=f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/{TOKEN}")
+    return "Bot is running via webhook", 200
+
+# =========================
+# Запуск сервера
+# =========================
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
